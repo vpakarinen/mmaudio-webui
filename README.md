@@ -2,7 +2,7 @@
 
 A simple web user interface for MMAudio Video-to-Audio and Text-to-Audio using Gradio.
 
-![MMAudio Web UI Preview](example.png)
+![MMAudio Web UI Preview](mmaudio-webui-preview.png)
 
 ## Installation
 
