@@ -46,6 +46,14 @@ The application will automatically download the following files if they don't ex
 - Motion encoder weights
 - BigVGAN vocoder model
 
+## Sponsor
+
+If you find this project useful, consider supporting me:
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-vpakarinen-FFDD00?style=for-the-badge&logo=buymeacoffee)](https://www.buymeacoffee.com/vpakarinen)
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-vpakarinen-FF6433?style=for-the-badge&logo=ko-fi)](https://ko-fi.com/vpakarinen)
+
 ## Credits
 
 This project uses the [MMAudio](https://github.com/hkchengrex/MMAudio) library for video-to-audio and text-to-audio functionality.
