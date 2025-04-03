@@ -1,6 +1,6 @@
 # MMAudio Web UI
 
-A simple web user interface for MMAudio Video-to-Audio and Text-to-Audio using Gradio.
+A simple web user interface for MMAudio Video-to-Audio and Text-to-Audio.
 
 ![MMAudio Web UI Preview](mmaudio-webui-preview.png)
 
