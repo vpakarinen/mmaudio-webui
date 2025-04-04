@@ -153,7 +153,6 @@ def generate_audio(video_file, prompt, negative_prompt="", seed=0, num_steps=20,
                         cfg_strength=cfg_strength
                     )
                     
-                    # Move model back to CUDA
                     net_cpu.to(device)
                 else:
                     waveform_float = generate(
