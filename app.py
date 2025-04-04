@@ -109,7 +109,12 @@ def generate_audio(video_file, prompt, negative_prompt="", seed=0, num_steps=20,
         num_steps = int(num_steps)
         cfg_strength = float(cfg_strength)
     except ValueError:
-        return None, "Invalid numeric parameters. Please check your inputs."
+        return None, "Invalid parameter values. Please check your inputs."
+
+    # Ensure duration is at least 6 seconds for video inputs to have enough frames
+    if video_file is not None and duration < 6:
+        logger.warning(f"Requested duration ({duration}s) is too short for MMAudio. Setting to minimum 6 seconds.")
+        duration = 6.0
     
     if duration <= 0:
         return None, "Duration must be greater than 0."
@@ -123,22 +128,45 @@ def generate_audio(video_file, prompt, negative_prompt="", seed=0, num_steps=20,
                 source_video_path = Path(video_file)
                 audio_path = Path(output_path) / f"{source_video_path.stem}_audio.flac"
                 
-                video_info = load_video(source_video_path, duration)
+                logger.info(f"[{generation_id}] Loading video: {video_file}, starting at {video_start_time}s")
+                video_info = load_video(video_file, duration, video_start_time)
                 
                 clip_frames = video_info.clip_frames.to(device=device, dtype=dtype).unsqueeze(0)
                 sync_frames = video_info.sync_frames.to(device=device, dtype=dtype).unsqueeze(0)
                 
-                waveform_float = generate(
-                    clip_video=clip_frames,
-                    sync_video=sync_frames,
-                    text=[prompt] if prompt else [],
-                    negative_text=[negative_prompt] if negative_prompt else None,
-                    feature_utils=feature_utils,
-                    net=net,
-                    fm=custom_fm,
-                    rng=gen,
-                    cfg_strength=cfg_strength
-                )
+                if device == 'cuda':
+                    logger.info(f"[{generation_id}] Temporarily moving model to CPU for video-to-audio generation")
+                    
+                    net_cpu = net.to('cpu')
+                    clip_frames_cpu = clip_frames.to('cpu')
+                    sync_frames_cpu = sync_frames.to('cpu')
+                    
+                    waveform_float = generate(
+                        clip_video=clip_frames_cpu,
+                        sync_video=sync_frames_cpu,
+                        text=[prompt] if prompt else None,
+                        negative_text=[negative_prompt] if negative_prompt else None,
+                        feature_utils=feature_utils,
+                        net=net_cpu,
+                        fm=custom_fm,
+                        rng=gen,
+                        cfg_strength=cfg_strength
+                    )
+                    
+                    # Move model back to CUDA
+                    net_cpu.to(device)
+                else:
+                    waveform_float = generate(
+                        clip_video=clip_frames,
+                        sync_video=sync_frames,
+                        text=[prompt] if prompt else None,
+                        negative_text=[negative_prompt] if negative_prompt else None,
+                        feature_utils=feature_utils,
+                        net=net,
+                        fm=custom_fm,
+                        rng=gen,
+                        cfg_strength=cfg_strength
+                    )
                 
                 wave_int16 = (waveform_float * 32767.0).clamp(-32768.0, 32767.0).to(torch.int16).cpu()
                 if wave_int16.dim() > 2:
@@ -231,6 +259,11 @@ def generate_image_to_audio(image_file, prompt, negative_prompt="", seed=0, num_
     if duration <= 0:
         return None, "Duration must be greater than 0."
         
+    # Ensure duration is at least 6 seconds for image inputs to have enough frames
+    if duration < 6:
+        logger.warning(f"Requested duration ({duration}s) is too short for MMAudio. Setting to minimum 6 seconds.")
+        duration = 6.0
+    
     try:
         with torch.inference_mode():
             custom_fm = FlowMatching(min_sigma=0.0, inference_mode='euler', num_steps=num_steps)
