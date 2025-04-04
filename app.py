@@ -266,7 +266,6 @@ def clear_outputs():
     except Exception as e:
         return f"Error clearing output directory: {str(e)}"
 
-# Create the Gradio interface
 with gr.Blocks(title="MMAudio: Video-to-Audio & Text-to-Audio", theme=gr.themes.Base(primary_hue="blue", neutral_hue="slate", spacing_size="sm", radius_size="sm", text_size="sm")) as demo:
     gr.Markdown("""
     <div style="text-align: center;">
