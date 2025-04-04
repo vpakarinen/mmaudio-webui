@@ -2,15 +2,28 @@ from pathlib import Path
 
 import gradio as gr
 import torchaudio
+import logging
 import shutil
 import torch
 import uuid
+import time
+import sys
 import os
 
 from mmaudio.eval_utils import (all_model_cfg, generate, load_image, load_video, setup_eval_logging)
 from mmaudio.model.utils.features_utils import FeaturesUtils
 from mmaudio.model.flow_matching import FlowMatching
 from mmaudio.model.networks import get_my_mmaudio
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mmaudio_webui.log"))
+    ]
+)
+logger = logging.getLogger("MMAudioWebUI")
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -21,18 +34,22 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 device = 'cpu'
 if torch.cuda.is_available():
     device = 'cuda'
+    logger.info(f"CUDA is available, using GPU: {torch.cuda.get_device_name(0)}")
 elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
     device = 'mps'
+    logger.info("MPS is available, using Apple Silicon GPU")
 else:
-    print('WARNING: CUDA/MPS are not available, running on CPU. This will be slow!')
+    logger.warning('WARNING: CUDA/MPS are not available, running on CPU. This will be slow!')
 dtype = torch.float32
 
+logger.info("Setting up evaluation logging...")
 setup_eval_logging()
 
+logger.info(f"Loading model configuration: large_44k_v2")
 model_config = all_model_cfg['large_44k_v2']
 model_config.download_if_needed()
 
-print("Initializing MMAudio model... This may take a moment...")
+logger.info("Initializing MMAudio model... This may take a moment...")
 
 def get_model():
     seq_cfg = model_config.seq_cfg
@@ -51,7 +68,7 @@ def get_model():
     return net, feature_utils, seq_cfg, fm, rng
 
 net, feature_utils, seq_cfg, fm, rng = get_model()
-print("Model initialized successfully!")
+logger.info("Model initialized successfully!")
 
 def print_tensor_info(tensor, name="Tensor"):
     if tensor is not None:
@@ -61,6 +78,9 @@ def print_tensor_info(tensor, name="Tensor"):
 
 def generate_audio(video_file, prompt, negative_prompt="", seed=0, num_steps=20, cfg_strength=7.5, duration=8, video_start_time=0):
     """Generate audio for a video file or from text"""
+    start_time = time.time()
+    logger.info(f"Starting audio generation with parameters: seed={seed}, steps={num_steps}, cfg={cfg_strength}, duration={duration}s")
+    
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
@@ -68,13 +88,19 @@ def generate_audio(video_file, prompt, negative_prompt="", seed=0, num_steps=20,
     rng.manual_seed(seed)
     
     if video_file is None and not prompt:
+        logger.warning("No video or text prompt provided")
         return None, "Please upload a video file or enter a text prompt."
     if video_file is not None and not prompt:
+        logger.info("No prompt provided for video, using default: 'ambient sounds'")
         prompt = "ambient sounds"
-        
+    
+    generation_id = str(uuid.uuid4())[:8]
+    logger.info(f"Generation ID: {generation_id}")
+    
     unique_id = str(uuid.uuid4())[:8]
     output_path = os.path.join(OUTPUT_DIR, f"output_{unique_id}")
     os.makedirs(output_path, exist_ok=True)
+    logger.info(f"Output directory created: {output_path}")
     
     try:
         duration = float(duration)
@@ -119,10 +145,11 @@ def generate_audio(video_file, prompt, negative_prompt="", seed=0, num_steps=20,
                     wave_int16 = wave_int16.reshape(1, -1)
                 torchaudio.save(str(audio_path), wave_int16, sample_rate=44100)
                 
+                logger.info(f"Audio generated and saved to {audio_path} in {time.time() - start_time:.2f}s")
                 return audio_path, f"Audio generated successfully and saved to {audio_path}"
             else:
                 if device == 'cuda':
-                    print("Temporarily moving model to CPU for text-to-audio generation")
+                    logger.info(f"[{generation_id}] Temporarily moving model to CPU for text-to-audio generation")
 
                     net_cpu = net.to('cpu')
                     waveform_float = generate(
@@ -157,15 +184,20 @@ def generate_audio(video_file, prompt, negative_prompt="", seed=0, num_steps=20,
                     wave_int16 = wave_int16.reshape(1, -1)
                 torchaudio.save(str(audio_path), wave_int16, sample_rate=44100)
                 
+                logger.info(f"Audio generated and saved to {audio_path} in {time.time() - start_time:.2f}s")
                 return audio_path, f"Audio generated successfully and saved to {audio_path}"
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
         print(f"Error details: {error_details}")
+        logger.error(f"Error generating audio: {str(e)}")
         return None, f"Error: {str(e)}"
 
 def generate_image_to_audio(image_file, prompt, negative_prompt="", seed=0, num_steps=20, cfg_strength=7.5, duration=8):
     """Generate audio for an image (experimental)"""
+    start_time = time.time()
+    logger.info(f"Starting image-to-audio generation with parameters: seed={seed}, steps={num_steps}, cfg={cfg_strength}, duration={duration}s")
+    
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
@@ -173,14 +205,20 @@ def generate_image_to_audio(image_file, prompt, negative_prompt="", seed=0, num_
     rng.manual_seed(seed)
     
     if image_file is None:
+        logger.warning("No image file provided")
         return None, "Please upload an image file."
-
-    if not prompt:
-        prompt = "ambient sounds"
         
+    if not prompt:
+        logger.info("No prompt provided, using default prompt")
+        prompt = "ambient sounds matching this image"
+    
     unique_id = str(uuid.uuid4())[:8]
     output_path = os.path.join(OUTPUT_DIR, f"output_{unique_id}")
     os.makedirs(output_path, exist_ok=True)
+    logger.info(f"Output directory created: {output_path}")
+    
+    generation_id = str(uuid.uuid4())[:8]
+    logger.info(f"Generation ID: {generation_id}")
     
     try:
         duration = float(duration)
@@ -207,7 +245,7 @@ def generate_image_to_audio(image_file, prompt, negative_prompt="", seed=0, num_
             sync_frames = image_info.sync_frames.to(device=device, dtype=dtype).unsqueeze(0)
             
             if device == 'cuda':
-                print("Temporarily moving model to CPU for image-to-audio generation")
+                logger.info(f"[{generation_id}] Temporarily moving model to CPU for image-to-audio generation")
 
                 net_cpu = net.to('cpu')
                 clip_frames_cpu = clip_frames.to('cpu')
@@ -245,11 +283,13 @@ def generate_image_to_audio(image_file, prompt, negative_prompt="", seed=0, num_
                 wave_int16 = wave_int16.reshape(1, -1)
             torchaudio.save(str(audio_path), wave_int16, sample_rate=44100)
             
+            logger.info(f"Audio generated and saved to {audio_path} in {time.time() - start_time:.2f}s")
             return audio_path, f"Audio generated successfully and saved to {audio_path}"
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
         print(f"Error details: {error_details}")
+        logger.error(f"Error generating audio: {str(e)}")
         return None, f"Error: {str(e)}"
 
 def clear_outputs():
