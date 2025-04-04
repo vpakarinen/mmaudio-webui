@@ -38,6 +38,7 @@ def get_model():
     seq_cfg = model_config.seq_cfg
     net = get_my_mmaudio(model_config.model_name).to(device, dtype).eval()
     net.load_weights(torch.load(model_config.model_path, map_location=device, weights_only=True))
+    
     feature_utils = FeaturesUtils(tod_vae_ckpt=model_config.vae_path,
                                   synchformer_ckpt=model_config.synchformer_ckpt,
                                   enable_conditions=True,
@@ -45,7 +46,7 @@ def get_model():
                                   bigvgan_vocoder_ckpt=model_config.bigvgan_16k_path)
     
     fm = FlowMatching(min_sigma=0.0, inference_mode='euler', num_steps=20)
-    rng = torch.Generator(device=device)
+    rng = torch.Generator(device='cpu')
     
     return net, feature_utils, seq_cfg, fm, rng
 
@@ -64,11 +65,13 @@ def generate_audio(video_file, prompt, negative_prompt="", seed=0, num_steps=20,
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
     
+    rng.manual_seed(seed)
+    
     if video_file is None and not prompt:
         return None, "Please upload a video file or enter a text prompt."
     if video_file is not None and not prompt:
-        prompt = "background sounds"
-    
+        prompt = "ambient sounds"
+        
     unique_id = str(uuid.uuid4())[:8]
     output_path = os.path.join(OUTPUT_DIR, f"output_{unique_id}")
     os.makedirs(output_path, exist_ok=True)
@@ -85,10 +88,11 @@ def generate_audio(video_file, prompt, negative_prompt="", seed=0, num_steps=20,
     if duration <= 0:
         return None, "Duration must be greater than 0."
     
-    rng.manual_seed(seed)
-    
     try:
         with torch.inference_mode():
+            custom_fm = FlowMatching(min_sigma=0.0, inference_mode='euler', num_steps=num_steps)
+            gen = torch.Generator(device='cpu').manual_seed(seed)
+            
             if video_file is not None:
                 source_video_path = Path(video_file)
                 audio_path = Path(output_path) / f"{source_video_path.stem}_audio.flac"
@@ -105,8 +109,8 @@ def generate_audio(video_file, prompt, negative_prompt="", seed=0, num_steps=20,
                     negative_text=[negative_prompt] if negative_prompt else None,
                     feature_utils=feature_utils,
                     net=net,
-                    fm=FlowMatching(min_sigma=0.0, inference_mode='euler', num_steps=num_steps),
-                    rng=rng,
+                    fm=custom_fm,
+                    rng=gen,
                     cfg_strength=cfg_strength
                 )
                 
@@ -117,19 +121,36 @@ def generate_audio(video_file, prompt, negative_prompt="", seed=0, num_steps=20,
                 
                 return audio_path, f"Audio generated successfully and saved to {audio_path}"
             else:
-                audio_path = Path(output_path) / f"text_to_audio_{unique_id}.flac"
+                if device == 'cuda':
+                    print("Temporarily moving model to CPU for text-to-audio generation")
+
+                    net_cpu = net.to('cpu')
+                    waveform_float = generate(
+                        clip_video=None,
+                        sync_video=None,
+                        text=[prompt] if prompt else [],
+                        negative_text=[negative_prompt] if negative_prompt else None,
+                        feature_utils=feature_utils,
+                        net=net_cpu,
+                        fm=custom_fm,
+                        rng=gen,
+                        cfg_strength=cfg_strength
+                    )
+                    net_cpu.to(device)
+                else:
+                    waveform_float = generate(
+                        clip_video=None,
+                        sync_video=None,
+                        text=[prompt] if prompt else [],
+                        negative_text=[negative_prompt] if negative_prompt else None,
+                        feature_utils=feature_utils,
+                        net=net,
+                        fm=custom_fm,
+                        rng=gen,
+                        cfg_strength=cfg_strength
+                    )
                 
-                waveform_float = generate(
-                    clip_video=None,
-                    sync_video=None,
-                    text=[prompt],
-                    negative_text=[negative_prompt] if negative_prompt else None,
-                    feature_utils=feature_utils,
-                    net=net,
-                    fm=FlowMatching(min_sigma=0.0, inference_mode='euler', num_steps=num_steps),
-                    rng=rng,
-                    cfg_strength=cfg_strength
-                )
+                audio_path = Path(output_path) / f"text_to_audio_{unique_id}.flac"
                 
                 wave_int16 = (waveform_float * 32767.0).clamp(-32768.0, 32767.0).to(torch.int16).cpu()
                 if wave_int16.dim() > 2:
@@ -148,7 +169,9 @@ def generate_image_to_audio(image_file, prompt, negative_prompt="", seed=0, num_
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
-        
+    
+    rng.manual_seed(seed)
+    
     if image_file is None:
         return None, "Please upload an image file."
 
@@ -170,10 +193,11 @@ def generate_image_to_audio(image_file, prompt, negative_prompt="", seed=0, num_
     if duration <= 0:
         return None, "Duration must be greater than 0."
         
-    rng.manual_seed(seed)
-    
     try:
         with torch.inference_mode():
+            custom_fm = FlowMatching(min_sigma=0.0, inference_mode='euler', num_steps=num_steps)
+            gen = torch.Generator(device='cpu').manual_seed(seed)
+            
             image_path = Path(image_file)
             audio_path = Path(output_path) / f"{image_path.stem}_audio.flac"
             
@@ -182,18 +206,39 @@ def generate_image_to_audio(image_file, prompt, negative_prompt="", seed=0, num_
             clip_frames = image_info.clip_frames.to(device=device, dtype=dtype).unsqueeze(0)
             sync_frames = image_info.sync_frames.to(device=device, dtype=dtype).unsqueeze(0)
             
-            waveform_float = generate(
-                clip_video=clip_frames,
-                sync_video=sync_frames,
-                text=[prompt] if prompt else [],
-                negative_text=[negative_prompt] if negative_prompt else None,
-                feature_utils=feature_utils,
-                net=net,
-                fm=FlowMatching(min_sigma=0.0, inference_mode='euler', num_steps=num_steps),
-                rng=rng,
-                cfg_strength=cfg_strength,
-                image_input=True,
-            )
+            if device == 'cuda':
+                print("Temporarily moving model to CPU for image-to-audio generation")
+
+                net_cpu = net.to('cpu')
+                clip_frames_cpu = clip_frames.to('cpu')
+                sync_frames_cpu = sync_frames.to('cpu')
+                
+                waveform_float = generate(
+                    clip_video=clip_frames_cpu,
+                    sync_video=sync_frames_cpu,
+                    text=[prompt] if prompt else [],
+                    negative_text=[negative_prompt] if negative_prompt else None,
+                    feature_utils=feature_utils,
+                    net=net_cpu,
+                    fm=custom_fm,
+                    rng=gen,
+                    cfg_strength=cfg_strength,
+                    image_input=True,
+                )
+                net_cpu.to(device)
+            else:
+                waveform_float = generate(
+                    clip_video=clip_frames,
+                    sync_video=sync_frames,
+                    text=[prompt] if prompt else [],
+                    negative_text=[negative_prompt] if negative_prompt else None,
+                    feature_utils=feature_utils,
+                    net=net,
+                    fm=custom_fm,
+                    rng=gen,
+                    cfg_strength=cfg_strength,
+                    image_input=True,
+                )
             
             wave_int16 = (waveform_float * 32767.0).clamp(-32768.0, 32767.0).to(torch.int16).cpu()
             if wave_int16.dim() > 2:
@@ -221,6 +266,7 @@ def clear_outputs():
     except Exception as e:
         return f"Error clearing output directory: {str(e)}"
 
+# Create the Gradio interface
 with gr.Blocks(title="MMAudio: Video-to-Audio & Text-to-Audio", theme=gr.themes.Base(primary_hue="blue", neutral_hue="slate", spacing_size="sm", radius_size="sm", text_size="sm")) as demo:
     gr.Markdown("""
     <div style="text-align: center;">
@@ -289,4 +335,4 @@ with gr.Blocks(title="MMAudio: Video-to-Audio & Text-to-Audio", theme=gr.themes.
         )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(server_name="0.0.0.0", share=True)
