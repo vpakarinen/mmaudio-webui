@@ -6,7 +6,7 @@ A simple web user interface for MMAudio Video-to-Audio and Text-to-Audio.
 
 ## Installation
 
-1. Clone this repository
+1. Clone this repository:
 
 ```bash
 git clone https://github.com/vpakarinen/mm-audio-webui.git
